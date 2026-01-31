@@ -23,6 +23,8 @@ import json
 import unicodedata
 import concurrent.futures
 import ast
+import asyncio
+import nest_asyncio
 
 # Bibliotecas Externas
 import pandas as pd
@@ -348,25 +350,6 @@ def run_async(func, tema):
     loop.run_until_complete(func(tema))
     loop.close()
 
-if __name__ == "__main__":
-    tema = 'Daniel Noboa'
-    
-    # Hilos Paralelos para las 4 redes
-    top_bigramas = Counter(bigramas).most_common(5)
-    for b, freq in top_bigramas:
-        print(f"   - {b[0]} {b[1]}: {freq} menciones")
-
-    print("\n3. LONGITUD PROMEDIO POR PLATAFORMA (Palabras):")
-    df['longitud'] = df['texto'].apply(lambda x: len(str(x).split()))
-    promedios = df.groupby('origen')['longitud'].mean()
-    for red, valor in promedios.items():
-        print(f"   - {red.capitalize()}: {valor:.2f} palabras por post")
-
-    palabras_unicas = len(set(todos_los_tokens))
-    total_palabras = len(todos_los_tokens)
-    riqueza = (palabras_unicas / total_palabras) * 100 if total_palabras > 0 else 0
-    print(f"\n4. RIQUEZA LEXICAL TOTAL: {riqueza:.2f}%")
-    print("="*50)
 
 def generar_wordcloud(tokens_totales):
     texto_nube = " ".join(tokens_totales)
@@ -641,17 +624,10 @@ def run_advanced_nlp():
 # MAIN FLOW
 # =================================================================================================
 
-def main():
-    if not os.path.exists("linkedin_cookies.pkl") or \
-       not os.path.exists("x_cookies.pkl") or \
-       not os.path.exists("facebook_cookies.pkl") or \
-       not os.path.exists("instagram_cookies.pkl"):
-        print("⚠️ Faltan cookies. Iniciando generador...")
-        generar_todas_las_cookies()
-
-    tema_investigacion = 'Rafael Correa'
-
-    # 1. SCRAPING
+if __name__ == "__main__":
+    tema = 'Nicolas Muñoz'
+    
+    # 1. EJECUCIÓN PARALELA DE SCRAPERS
     hilos = [
         threading.Thread(target=run_async, args=(scrap_linkedin_playwright, tema)),
         threading.Thread(target=run_async, args=(scrap_x_playwright, tema)),
@@ -659,48 +635,69 @@ def main():
         threading.Thread(target=run_async, args=(scrap_instagram_playwright, tema))
     ]
 
-    print("🚀 Iniciando recolección paralela masiva...")
+    print(f"🚀 Iniciando recolección paralela masiva para: {tema}")
     for h in hilos: h.start()
     for h in hilos: h.join()
 
-    # Unificación y PLN
-    archivos = ['comentarios_linkedin.csv', 'comentarios_x.csv', 'comentarios_fb.csv', 'comentarios_ig.csv']
-    dfs = []
-    for f in archivos:
-        if os.path.exists(f):
-            t = pd.read_csv(f)
-            t.columns = ['texto']
-            t['origen'] = f.split('_')[1].split('.')[0]
-            dfs.append(t)
+    # 2. CARGA Y UNIFICACIÓN DE DATOS (Dataset para IA)
+    archivos = {
+        'comentarios_linkedin.csv': 'linkedin',
+        'comentarios_x.csv': 'x',
+        'comentarios_fb.csv': 'facebook',
+        'comentarios_ig.csv': 'instagram'
+    }
     
-    if dfs:
-        df_f = pd.concat(dfs, ignore_index=True)
-        print("🧼 Iniciando limpieza y análisis PLN...")
-        df_f['texto_limpio'] = df_f['texto'].apply(limpiar_profundo)
-        df_f['tokens'] = df_f['texto_limpio'].apply(procesar_nlp)
-        
-        # Nube de Palabras
-        tokens_all = [t for sub in df_f['tokens'] for t in sub]
-        if tokens_all:
-            WordCloud(width=1000, height=500, background_color='white').generate(" ".join(tokens_all)).to_file("nube_final.png")
-            
-            # Análisis Punto B
-            realizar_analisis_investigados(df_f, tokens_all)
-            
-            # CSV y PDF Final
-            df_f.to_csv('resultados_totales.csv', index=False)
-            print("\n✨ PROCESO FINALIZADO ✨")
-            print("Archivos: 'nube_final.png' y 'resultados_totales.csv'")
-            df.to_csv('resultados_finales_grado.csv', index=False)
-            print("\n✨ CSV INTERMEDIO GENERADO: 'resultados_finales_grado.csv' ✨")
-            
-            # 3. LLAMADA AL PIPELINE AVANZADO (IA)
-            run_advanced_nlp()
-            
-        else:
-            print("❌ El procesamiento no generó tokens.")
-    else:
-        print("❌ No se encontraron datos en los archivos CSV recolectados.")
+    dfs = []
+    for archivo, red in archivos.items():
+        if os.path.exists(archivo):
+            temp_df = pd.read_csv(archivo)
+            temp_df['origen'] = red
+            dfs.append(temp_df)
 
-if __name__ == "__main__":
-    main()
+    if not dfs:
+        print("❌ No se recolectaron datos. Revisa las cookies o los selectores.")
+    else:
+        df = pd.concat(dfs, ignore_index=True)
+        df = df.drop_duplicates(subset=['texto']) # Limpieza de duplicados
+        
+        # --- PROCESAMIENTO PLN ---
+        df['texto_limpio'] = df['texto'].apply(limpiar_profundo)
+        df['tokens'] = df['texto_limpio'].apply(procesar_nlp)
+        todos_los_tokens = [t for sub in df['tokens'] for t in sub]
+
+        # --- REPORTE DE MÉTRICAS (LO QUE NECESITABAS) ---
+        print("\n" + "="*50)
+        print("📊 RESUMEN ANALÍTICO DEL DATASET")
+        print("="*50)
+
+        # 1. Volumen por Red
+        print(f"1. VOLUMEN TOTAL ÚNICO: {len(df)} comentarios.")
+
+        # 2. Análisis de Bigramas (Punto B de tu tesis)
+        print("\n2. TOP 5 BIGRAMAS (Tendencias detectadas):")
+        bigramas = list(ngrams(todos_los_tokens, 2))
+        top_bigramas = Counter(bigramas).most_common(5)
+        for b, freq in top_bigramas:
+            print(f"   - {b[0]} {b[1]}: {freq} menciones")
+
+        # 3. Longitud Promedio (Análisis de Engagement)
+        print("\n3. LONGITUD PROMEDIO POR PLATAFORMA (Palabras):")
+        df['longitud'] = df['texto'].apply(lambda x: len(str(x).split()))
+        promedios = df.groupby('origen')['longitud'].mean()
+        for red, valor in promedios.items():
+            print(f"   - {red.capitalize()}: {valor:.2f} palabras por post")
+
+        # 4. Riqueza Lexical (Diversidad del vocabulario)
+        palabras_unicas = len(set(todos_los_tokens))
+        total_palabras = len(todos_los_tokens)
+        riqueza = (palabras_unicas / total_palabras) * 100 if total_palabras > 0 else 0
+        print(f"\n4. RIQUEZA LEXICAL TOTAL: {riqueza:.2f}%")
+        
+        # 5. Exportación Final
+        WordCloud(width=1000, height=500, background_color='white').generate(" ".join(todos_los_tokens)).to_file("nube_final.png")
+        df.to_csv('resultados_finales_grado.csv', index=False)
+
+        run_advanced_nlp()
+        
+        print("="*50)
+        print("✨ PROCESO FINALIZADO: Dataset guardado y Nube generada.")
