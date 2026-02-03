@@ -208,98 +208,185 @@ async def scrap_linkedin_playwright(tema):
 async def scrap_facebook_playwright(tema):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
+        context = await browser.new_context(viewport={'width': 1280, 'height': 900})
         
         if await inyectar_cookies_pkl(context, "facebook_cookies.pkl"):
             page = await context.new_page()
-            await page.goto(f"https://www.facebook.com/search/posts/?q={tema}")
-            await page.wait_for_timeout(5000)
+            url = f"https://www.facebook.com/search/posts/?q={tema.replace(' ', '%20')}"
+            print(f"🚀 [Facebook] Iniciando extracción por posición de contenedor...")
+            await page.goto(url)
+            await page.wait_for_timeout(8000)
 
-            vistos_globales = set() # Para no duplicar en el CSV
+            vistos = set()
+            ultimo_posinset = 0
 
-            # 1. Localizar posts
-            botones_comentarios = page.locator('div[role="button"]:has-text("comentario")')
-            for j in range(await botones_comentarios.count()):
-                try:
-                    boton = botones_comentarios.nth(j)
-                    await boton.scroll_into_view_if_needed()
-                    await boton.click(force=True)
-                    await page.wait_for_timeout(3000)
+            # Abrimos el archivo una sola vez
+            with open('comentarios_fb.csv', 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
 
-                    # 2. ACTIVAR "TODOS LOS COMENTARIOS" (Como vimos antes)
-                    try:
-                        await page.get_by_role("button", name=re.compile(r"Más relevantes|Most relevant", re.I)).first.click()
-                        await page.get_by_role("menuitem").filter(has_text="Todos los comentarios").click()
-                        await page.wait_for_timeout(3000)
-                    except: pass
-
-                    # 3. BUCLE DE EXTRACCIÓN REAL (Aquí está el truco)
-                    print(f"📥 Extrayendo hilo del post {j+1}...")
+                for scroll_principal in range(15):
+                    # Localizamos los contenedores específicos que me pasaste (aria-posinset)
+                    selector_pos = 'div[aria-posinset]'
+                    posts = page.locator(selector_pos)
+                    cantidad_actual = await posts.count()
                     
-                    intentos_sin_nuevos = 0
-                    while intentos_sin_nuevos < 5: # Si bajamos 5 veces y no hay nada nuevo, paramos
-                        
-                        # --- CAPTURA EN CALIENTE ---
-                        # Extraemos lo que hay en pantalla AHORA mismo
-                        comentarios_en_pantalla = await page.query_selector_all('div[dir="auto"][style*="text-align: start"]')
-                        nuevos_encontrados = 0
-                        
-                        for c in comentarios_en_pantalla:
-                            t = (await c.inner_text()).strip().replace('\n', ' ')
-                            if len(t) > 10 and t not in vistos_globales:
-                                vistos_globales.add(t)
-                                # GUARDADO INMEDIATO: Si FB borra el elemento del DOM, ya lo tenemos en el CSV
-                                guardar_comentario('comentarios_fb.csv', [t], ["texto"])
-                                nuevos_encontrados += 1
-                        
-                        if nuevos_encontrados > 0:
-                            intentos_sin_nuevos = 0
-                        else:
-                            intentos_sin_nuevos += 1
+                    print(f"⏳ Iteración {scroll_principal + 1}: {cantidad_actual} publicaciones en el feed.")
 
-                        # --- EXPANDIR MÁS ---
-                        # Buscamos el botón de "Ver más comentarios" o "Ver respuestas"
-                        boton_mas = page.get_by_text(re.compile(r"Ver más comentarios|Ver \d+ respuestas|View more comments", re.I)).first
-                        
-                        if await boton_mas.is_visible():
-                            await boton_mas.scroll_into_view_if_needed()
-                            await boton_mas.click()
-                            await page.wait_for_timeout(2000)
-                        else:
-                            # Si no hay botón, hacemos un scroll pequeño para disparar el lazy load
-                            await page.mouse.wheel(0, 500)
-                            await page.wait_for_timeout(1500)
+                    for i in range(cantidad_actual):
+                        try:
+                            post_actual = posts.nth(i)
                             
-                            # Si después del scroll y el tiempo no hay botón ni texto nuevo, break
-                            if nuevos_encontrados == 0 and intentos_sin_nuevos > 3:
-                                break
+                            # Extraemos el número de posición para no repetir
+                            pos_attr = await post_actual.get_attribute("aria-posinset")
+                            pos_actual_num = int(pos_attr) if pos_attr else 0
 
-                except Exception as e:
-                    print(f"⚠️ Error en post {j+1}: {e}")
-                    continue
+                            if pos_actual_num <= ultimo_posinset:
+                                continue # Ya procesamos esta posición
 
+                            # 1. CLIC EN EL BOTÓN DE COMENTARIOS
+                            # Buscamos el botón dentro de ESTE contenedor específico
+                            boton_comentarios = post_actual.locator('div[role="button"]').filter(has_text=re.compile(r"\d+.*comentario", re.I))
+                            
+                            if await boton_comentarios.count() > 0:
+                                await post_actual.scroll_into_view_if_needed()
+                                await page.wait_for_timeout(1000)
+                                
+                                # Clic forzado
+                                await boton_comentarios.first.click(force=True)
+                                print(f"   👉 Entrando al Post posición {pos_actual_num}...")
+                                await page.wait_for_timeout(4500)
+
+                                # 2. SCROLL INTERNO EN EL DIÁLOGO (Fuerza carga de hilos)
+                                # El diálogo es un modal que aparece con role="dialog"
+                                for _ in range(4): # 4 segundos de scroll intenso
+                                    await page.mouse.wheel(0, 1000)
+                                    await page.wait_for_timeout(1000)
+
+                                # 3. COPIAR TEXTOS (Selector de tu HTML previo)
+                                selector_txt = 'div[role="dialog"] div.x1lliihq.xjkvuk6.x1iorvi4'
+                                elementos = await page.locator(selector_txt).all()
+                                
+                                nuevos = 0
+                                for el in elementos:
+                                    t = (await el.inner_text()).strip().replace('\n', ' ')
+                                    if len(t) > 12 and t not in vistos:
+                                        vistos.add(t)
+                                        writer.writerow([t])
+                                        nuevos += 1
+                                
+                                if nuevos > 0:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                    print(f"      ✅ {nuevos} comentarios nuevos guardados.")
+
+                                # 4. SALIR Y ACTUALIZAR MARCADOR
+                                await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(1500)
+                            
+                            ultimo_posinset = pos_actual_num
+
+                        except Exception:
+                            await page.keyboard.press("Escape")
+                            continue
+
+                    # Bajar el scroll principal para que Facebook cargue más aria-posinset
+                    await page.keyboard.press("End")
+                    await page.wait_for_timeout(4000)
+
+            print(f"✨ Sesión de Facebook finalizada. Total: {len(vistos)}")
         await browser.close()
 
 async def scrap_x_playwright(tema):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
+        context = await browser.new_context(viewport={'width': 1280, 'height': 800})
+        
         if await inyectar_cookies_pkl(context, "x_cookies.pkl"):
             page = await context.new_page()
-            await page.goto(f"https://x.com/search?q={tema.replace(' ', '%20')}&f=live")
-            await page.wait_for_timeout(4000)
+            url_busqueda = f"https://x.com/search?q={tema.replace(' ', '%20')}&f=live"
+            print(f"🚀 [X] Iniciando recolección exhaustiva: {tema}")
+            await page.goto(url_busqueda)
+            await page.wait_for_timeout(6000)
+
             vistos = set()
-            with open('comentarios_x.csv', 'w', newline='', encoding='utf-8') as f:
+            tweets_procesados = set()
+
+            with open('comentarios_x.csv', 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(["texto"])
-                for _ in range(20):
-                    elementos = await page.query_selector_all('div[data-testid="tweetText"]')
-                    for el in elementos:
-                        t = (await el.inner_text()).strip().replace('\n', ' ')
-                        if len(t) > 10 and t not in vistos:
-                            vistos.add(t); writer.writerow([t])
-                    await page.evaluate("window.scrollBy(0, 1000)")
-                    await page.wait_for_timeout(random.randint(1000, 2000))
+
+                for scroll_principal in range(25): # Más profundidad de búsqueda
+                    tweets = page.locator('article[data-testid="tweet"]')
+                    cantidad = await tweets.count()
+                    
+                    for i in range(cantidad):
+                        try:
+                            tweet_actual = tweets.nth(i)
+                            texto_ref = await tweet_actual.inner_text()
+                            tweet_id = hash(texto_ref[:80])
+                            
+                            if tweet_id in tweets_procesados: continue
+
+                            # --- ENTRAR AL HILO ---
+                            await tweet_actual.scroll_into_view_if_needed()
+                            await page.wait_for_timeout(1000)
+                            await tweet_actual.click()
+                            print(f"   👉 Entrando al hilo {i+1}...")
+                            await page.wait_for_timeout(4000)
+
+                            # --- SCROLL INTERNO HASTA EL FINAL ---
+                            intentos_sin_nuevos = 0
+                            while intentos_sin_nuevos < 3: # Si en 3 scrolls no hay nada nuevo, fin.
+                                antes_de_scroll = len(vistos)
+                                
+                                # Capturar comentarios visibles
+                                elementos = await page.locator('div[data-testid="tweetText"]').all()
+                                for el in elementos:
+                                    t = (await el.inner_text()).strip().replace('\n', ' ')
+                                    if len(t) > 12 and t not in vistos:
+                                        vistos.add(t)
+                                        writer.writerow([t])
+                                
+                                if len(vistos) > antes_de_scroll:
+                                    intentos_sin_nuevos = 0 # Reset si encontramos datos
+                                    f.flush()
+                                else:
+                                    intentos_sin_nuevos += 1
+                                
+                                # Hacer scroll para cargar más
+                                await page.mouse.wheel(0, 1000)
+                                await page.wait_for_timeout(1500)
+
+                            print(f"      ✅ Hilo completado. Total acumulado: {len(vistos)}")
+
+                            # --- RETORNO BLINDADO (Escape sucesivo para no perder el feed) ---
+                            # Primero intentamos con los botones que me pasaste
+                            salida_ok = False
+                            for selector in ['button[data-testid="app-bar-back"]', 'button[aria-label="Close"]']:
+                                btn = page.locator(selector)
+                                if await btn.count() > 0 and await btn.is_visible():
+                                    await btn.first.click()
+                                    salida_ok = True
+                                    break
+                            
+                            if not salida_ok:
+                                # Si X se pone difícil, Escape nos devuelve al feed principal sin recargar
+                                await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(500)
+                                await page.keyboard.press("Escape")
+
+                            await page.wait_for_timeout(2000)
+                            tweets_procesados.add(tweet_id)
+
+                        except Exception:
+                            # Emergencia: Escape y seguir con el siguiente
+                            await page.keyboard.press("Escape")
+                            continue
+
+                    # Bajar el feed principal para cargar más tweets
+                    await page.evaluate("window.scrollBy(0, 2000)")
+                    await page.wait_for_timeout(4000)
+
+            print(f"✨ Proceso de X terminado. Dataset listo con {len(vistos)} entradas.")
         await browser.close()
 
 async def scrap_instagram_playwright(tema):
@@ -640,13 +727,13 @@ def run_advanced_nlp():
 # =================================================================================================
 
 if __name__ == "__main__":
-    tema = 'ChatGPT'
+    tema = 'Daniel Noboa'
 
     
     # 1. EJECUCIÓN PARALELA DE SCRAPERS
     hilos = [
-        threading.Thread(target=run_async, args=(scrap_linkedin_playwright, tema)),
-        # threading.Thread(target=run_async, args=(scrap_x_playwright, tema)),
+        # threading.Thread(target=run_async, args=(scrap_linkedin_playwright, tema)),
+        threading.Thread(target=run_async, args=(scrap_x_playwright, tema)),
         # threading.Thread(target=run_async, args=(scrap_facebook_playwright, tema)),
         # threading.Thread(target=run_async, args=(scrap_instagram_playwright, tema))
     ]
