@@ -224,7 +224,7 @@ async def scrap_facebook_playwright(tema):
             with open('comentarios_fb.csv', 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
 
-                for scroll_principal in range(15):
+                for scroll_principal in range(4):
                     # Localizamos los contenedores específicos que me pasaste (aria-posinset)
                     selector_pos = 'div[aria-posinset]'
                     posts = page.locator(selector_pos)
@@ -236,15 +236,12 @@ async def scrap_facebook_playwright(tema):
                         try:
                             post_actual = posts.nth(i)
                             
-                            # Extraemos el número de posición para no repetir
                             pos_attr = await post_actual.get_attribute("aria-posinset")
                             pos_actual_num = int(pos_attr) if pos_attr else 0
 
                             if pos_actual_num <= ultimo_posinset:
                                 continue # Ya procesamos esta posición
 
-                            # 1. CLIC EN EL BOTÓN DE COMENTARIOS
-                            # Buscamos el botón dentro de ESTE contenedor específico
                             boton_comentarios = post_actual.locator('div[role="button"]').filter(has_text=re.compile(r"\d+.*comentario", re.I))
                             
                             if await boton_comentarios.count() > 0:
@@ -314,7 +311,7 @@ async def scrap_x_playwright(tema):
             with open('comentarios_x.csv', 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
 
-                for scroll_principal in range(25): # Más profundidad de búsqueda
+                for scroll_principal in range(4): # Más profundidad de búsqueda
                     tweets = page.locator('article[data-testid="tweet"]')
                     cantidad = await tweets.count()
                     
