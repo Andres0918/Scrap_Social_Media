@@ -1,0 +1,231 @@
+<div class="dashboard-container">
+    <!-- ================================
+         TOAST NOTIFICATIONS
+         ================================ -->
+    <p-toast position="top-right"></p-toast>
+
+    <!-- ================================
+         ANIMATED BACKGROUND
+         ================================ -->
+    <div class="animated-background">
+        <div class="gradient-orb orb-1"></div>
+        <div class="gradient-orb orb-2"></div>
+        <div class="gradient-orb orb-3"></div>
+    </div>
+
+    <!-- ================================
+         HEADER
+         ================================ -->
+    <div class="header-section fade-in">
+        <div class="glass-card header-card">
+            <div class="header-content">
+                <div class="header-icon-wrapper">
+                    <div class="icon-glow"></div>
+                    <div class="header-icon">
+                        <i class="pi pi-chart-line"></i>
+                    </div>
+                </div>
+                <div class="header-text">
+                    <h1 class="gradient-text">Social Sentiment Analyzer</h1>
+                    <p class="subtitle">
+                        <i class="pi pi-sparkles"></i>
+                        AI-Powered Multi-Platform Sentiment Analysis
+                    </p>
+                    <div class="header-badges">
+                        <span class="badge badge-success">
+                            <i class="pi pi-check-circle"></i>
+                            Real-time Analysis
+                        </span>
+                        <span class="badge badge-info">
+                            <i class="pi pi-bolt"></i>
+                            4 Platforms
+                        </span>
+                        <span class="badge badge-warning">
+                            <i class="pi pi-shield"></i>
+                            AI Protected
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================
+         SEARCH SECTION
+         ================================ -->
+    <div class="search-section slide-in-left">
+        <p-card styleClass="search-card glass-card">
+            <ng-template pTemplate="header">
+                <div class="card-header-custom">
+                    <div class="header-icon-small">
+                        <i class="pi pi-search"></i>
+                    </div>
+                    <span>Nueva Búsqueda</span>
+                    <div class="header-decoration"></div>
+                </div>
+            </ng-template>
+
+            <!-- Query Input -->
+            <div class="p-fluid mb-4">
+                <label for="searchQuery" class="form-label">
+                    <i class="pi pi-compass mr-2"></i>
+                    ¿Qué tema quieres analizar?
+                </label>
+                <span class="p-input-icon-left p-input-icon-right input-wrapper">
+                    <i class="pi pi-search"></i>
+                    <input pInputText id="searchQuery" [(ngModel)]="searchQuery"
+                        placeholder="Ej: ChatGPT, Inteligencia Artificial, iPhone 15..." (keyup.enter)="startAnalysis()"
+                        [disabled]="isAnalyzing" class="modern-input" />
+                    <i class="pi pi-sparkles sparkle-icon"></i>
+                </span>
+            </div>
+
+            <!-- Platform Selection -->
+            <div class="platform-selection mb-4">
+                <label class="form-label mb-3">
+                    <i class="pi pi-globe mr-2"></i>
+                    Selecciona Plataformas
+                </label>
+                <div class="platforms-grid">
+                    <div *ngFor="let platform of availablePlatforms" class="platform-card"
+                        [class.selected]="isPlatformSelected(platform)" (click)="togglePlatform(platform)">
+                        <div class="platform-glow" [style.background]="platform.color"></div>
+                        <div class="platform-icon" [style.background]="platform.color">
+                            <i [class]="'pi ' + platform.icon"></i>
+                        </div>
+                        <span class="platform-name">{{ platform.name }}</span>
+                        <div class="selection-indicator">
+                            <i class="check-icon pi" [class.pi-check-circle-fill]="isPlatformSelected(platform)"
+                                [class.pi-circle]="!isPlatformSelected(platform)"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Button -->
+            <div class="action-buttons">
+                <p-button label="🚀 Analizar Sentimientos" icon="pi pi-play"
+                    styleClass="p-button-lg p-button-rounded action-btn" [loading]="isAnalyzing"
+                    loadingIcon="pi pi-spin pi-spinner" (onClick)="startAnalysis()" [disabled]="isAnalyzing"></p-button>
+            </div>
+        </p-card>
+    </div>
+
+    <!-- ================================
+         PROGRESS TRACKER
+         ================================ -->
+    <div *ngIf="isAnalyzing" class="progress-section fade-in">
+        <app-progress-tracker [messages]="progressMessages"></app-progress-tracker>
+    </div>
+
+    <!-- ================================
+         RESULTS SECTION - ULTRA DISEÑO
+         ================================ -->
+    <div *ngIf="showResults && statistics" class="results-section fade-in">
+
+        <!-- Quick Stats Overview -->
+        <div class="quick-stats-grid">
+            <div class="stat-card glass-card stat-primary">
+                <div class="stat-icon">
+                    <i class="pi pi-comments"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label">Total Comentarios</div>
+                    <div class="stat-value">{{ statistics.stats.total_comments | number }}</div>
+                    <div class="stat-trend positive">
+                        <i class="pi pi-arrow-up"></i>
+                        +100% Completado
+                    </div>
+                </div>
+                <div class="stat-decoration"></div>
+            </div>
+
+            <div class="stat-card glass-card stat-success">
+                <div class="stat-icon">
+                    <i class="pi pi-heart-fill"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label">Sentimiento Positivo</div>
+                    <div class="stat-value">{{ getPositivePercentage() }}%</div>
+                    <div class="stat-trend positive">
+                        <i class="pi pi-thumbs-up"></i>
+                        Dominante
+                    </div>
+                </div>
+                <div class="stat-decoration"></div>
+            </div>
+
+            <div class="stat-card glass-card stat-info">
+                <div class="stat-icon">
+                    <i class="pi pi-bolt"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label">Tiempo Promedio</div>
+                    <div class="stat-value">{{ statistics.stats.avg_processing_time | number:'1.2-2' }}s</div>
+                    <div class="stat-trend info">
+                        <i class="pi pi-clock"></i>
+                        Por análisis
+                    </div>
+                </div>
+                <div class="stat-decoration"></div>
+            </div>
+
+            <div class="stat-card glass-card stat-warning">
+                <div class="stat-icon">
+                    <i class="pi pi-globe"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label">Plataformas</div>
+                    <div class="stat-value">{{ getPlatformCount() }}</div>
+                    <div class="stat-trend warning">
+                        <i class="pi pi-check"></i>
+                        Analizadas
+                    </div>
+                </div>
+                <div class="stat-decoration"></div>
+            </div>
+        </div>
+
+        <!-- Stats Cards Component -->
+        <app-stats-cards [statistics]="statistics!"></app-stats-cards>
+
+        <!-- Storytelling -->
+        <app-storytelling *ngIf="storytelling" [storytelling]="storytelling!"></app-storytelling>
+
+        <!-- Charts -->
+        <app-sentiment-charts [statistics]="statistics" [comments]="comments"></app-sentiment-charts>
+
+        <!-- Comments Table -->
+        <app-comments-table [comments]="comments" [taskId]="currentTaskId!"></app-comments-table>
+    </div>
+
+    <!-- ================================
+         EMPTY STATE
+         ================================ -->
+    <div *ngIf="!isAnalyzing && !showResults" class="empty-state fade-in">
+        <p-card styleClass="glass-card empty-card">
+            <div class="empty-content">
+                <div class="empty-icon-wrapper">
+                    <div class="icon-pulse"></div>
+                    <i class="pi pi-inbox empty-icon"></i>
+                </div>
+                <h3>Comienza tu Análisis</h3>
+                <p>Ingresa un tema de búsqueda y selecciona las plataformas para comenzar</p>
+                <div class="empty-features">
+                    <div class="feature">
+                        <i class="pi pi-bolt"></i>
+                        <span>Análisis en tiempo real</span>
+                    </div>
+                    <div class="feature">
+                        <i class="pi pi-shield"></i>
+                        <span>IA Avanzada</span>
+                    </div>
+                    <div class="feature">
+                        <i class="pi pi-chart-line"></i>
+                        <span>Métricas detalladas</span>
+                    </div>
+                </div>
+            </div>
+        </p-card>
+    </div>
+</div>

@@ -25,6 +25,7 @@ import concurrent.futures
 import ast
 import asyncio
 import nest_asyncio
+import datetime
 
 # Bibliotecas Externas
 import pandas as pd
@@ -33,8 +34,7 @@ import matplotlib.pyplot as plt
 import emoji
 import requests
 import google.generativeai as genai
-from groq import Groq
-from openai import OpenAI
+from dotenv import load_dotenv
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -133,10 +133,9 @@ async def scrap_linkedin_playwright(tema):
             vistos = set()
             posts_ya_leidos = set()
 
-            with open('comentarios_linkedin.csv', 'a', newline='', encoding='utf-8') as f:
+            with open('comentarios_linkedin.csv', 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                if os.stat('comentarios_linkedin.csv').st_size == 0:
-                    writer.writerow(["texto"])
+                writer.writerow(["texto"])
 
                 for scroll in range(4):
                     posts = page.locator('div[role="listitem"]')
@@ -215,14 +214,29 @@ async def scrap_facebook_playwright(tema):
             url = f"https://www.facebook.com/search/posts/?q={tema.replace(' ', '%20')}"
             print(f"🚀 [Facebook] Iniciando extracción por posición de contenedor...")
             await page.goto(url)
-            await page.wait_for_timeout(8000)
+            await page.wait_for_timeout(5000)
+
+            # --- DIAGNOSTIC CHECK ---
+            if "login" in page.url or "checkpoint" in page.url:
+                print("❌ [Facebook] Error: Redireccionado a login (Cookies inválidas o expiradas).")
+                return
+            
+            # Verificar si existe "no results" o texto de error
+            content = await page.content()
+            if "This page isn't available" in content or "Esta página no está disponible" in content:
+                print("❌ [Facebook] Error: Página no disponible (Posible bloqueo o cookies inválidas).")
+                return
+            # ------------------------
+
+            await page.wait_for_timeout(3000)
 
             vistos = set()
             ultimo_posinset = 0
 
             # Abrimos el archivo una sola vez
-            with open('comentarios_fb.csv', 'a', newline='', encoding='utf-8') as f:
+            with open('comentarios_fb.csv', 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
+                writer.writerow(["texto"])
 
                 for scroll_principal in range(4):
                     # Localizamos los contenedores específicos que me pasaste (aria-posinset)
@@ -305,11 +319,19 @@ async def scrap_x_playwright(tema):
             await page.goto(url_busqueda)
             await page.wait_for_timeout(6000)
 
+            # --- DIAGNOSTIC CHECK ---
+            if "login" in page.url or "flow/login" in page.url:
+                print("❌ [X] Error: Redireccionado a login (Cookies inválidas).")
+                return
+            # ------------------------
+
             vistos = set()
             tweets_procesados = set()
 
-            with open('comentarios_x.csv', 'a', newline='', encoding='utf-8') as f:
+            # Abrimos el archivo en modo escritura (sobrescribir) explícitamente con header
+            with open('comentarios_x.csv', 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
+                writer.writerow(["texto"])
 
                 for scroll_principal in range(4): # Más profundidad de búsqueda
                     tweets = page.locator('article[data-testid="tweet"]')
@@ -487,11 +509,19 @@ def _get_gemini_model(api_key):
             "Devuelve SOLO JSON válido con: "
             "sentimiento (Positivo/Negativo/Neutro), explicacion (breve razón). "
         )
-        _model_gemini = genai.GenerativeModel(
-            model_name="gemini-flash-latest", 
-            generation_config=generation_config,
-            system_instruction=system_instruction,
-        )
+        try:
+            _model_gemini = genai.GenerativeModel(
+                model_name="gemini-flash-latest", 
+                generation_config=generation_config,
+                system_instruction=system_instruction,
+            )
+        except TypeError:
+            # Fallback for older versions of the library
+            print("⚠️ Warning: google-generativeai version too old for system_instruction. Using simplified init.")
+            _model_gemini = genai.GenerativeModel(
+                model_name="gemini-pro", 
+                generation_config=generation_config
+            )
     return _model_gemini
 
 def analyze_with_gemini(text):
@@ -501,106 +531,74 @@ def analyze_with_gemini(text):
     start_time = time.time()
     try:
         model = _get_gemini_model(api_key)
-        response = model.generate_content(f"""Analiza este comentario: "{text}" """)
+        prompt = f"""Analiza este comentario: "{text}"
+        Responde ÚNICAMENTE con un objeto JSON válido con este formato:
+        {{
+            "sentimiento": "Positivo" | "Negativo" | "Neutro",
+            "explicacion": "breve razón (max 15 palabras)"
+        }}
+        No uses bloques de código markdown (```json). Devuelve solo el texto plano del JSON."""
+        
+        response = model.generate_content(prompt)
         result = response.text.replace('```json', '').replace('```', '').strip()
+        
+        # --- DEBUG: GUARDAR RESPUESTA BRUTA EN JSON ---
+        try:
+            log_entry = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "input_text": text,
+                "raw_response": result,
+                "parsed_successfully": False
+            }
+            
+            # Intentar parsear para flag
+            try:
+                import json
+                json.loads(result)
+                log_entry["parsed_successfully"] = True
+            except:
+                pass
+
+            debug_file = 'debug_gemini_responses.json'
+            data = []
+            if os.path.exists(debug_file):
+                try:
+                    with open(debug_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except:
+                    data = []
+            
+            data.append(log_entry)
+            
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+                
+        except Exception as e:
+            print(f"Debug Log Error: {e}")
+        # --------------------------------------
+
         end_time = time.time()
         return result, end_time - start_time
     except Exception as e:
         time.sleep(1) 
         return f"ERROR: {str(e)}", time.time() - start_time
 
-def analyze_with_groq(text):
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key: return "ERROR: No API Key", 0
+# Funciones de otros modelos eliminadas para usar solo Gemini
 
-    start_time = time.time()
-    try:
-        client = Groq(api_key=api_key)
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Eres un experto en análisis de sentimientos. Responde SOLO en JSON."},
-                {"role": "user", "content": f"""Analiza este tweet: "{text}".
-                Formato JSON esperado: {{"sentimiento": "Positivo|Negativo|Neutro", "explicacion": "breve razón"}}"""}
-            ],
-            temperature=0,
-            response_format={"type": "json_object"}
-        )
-        result = completion.choices[0].message.content
-        end_time = time.time()
-        return result, end_time - start_time
-    except Exception as e:
-        return f"ERROR: {str(e)}", time.time() - start_time
-
-def analyze_with_openrouter(text):
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    base_url = "https://openrouter.ai/api/v1"
-    if not api_key: return "ERROR: No OpenRouter API Key", 0
-
-    start_time = time.time()
-    try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        response = client.chat.completions.create(
-            model="deepseek/deepseek-r1-distill-llama-70b", 
-            messages=[
-                {"role": "system", "content": "Eres un analista de opiniones. Responde siempre en JSON puro."},
-                {"role": "user", "content": f"""Analiza el sentimiento de este post: "{text}".
-                JSON: {{"sentimiento": "Positivo/Negativo/Neutro", "explicacion": "breve razón"}}"""}
-            ],
-            extra_body={
-                "headers": {
-                    "HTTP-Referer": "https://localhost", 
-                    "X-Title": "NLP Lab 07",
-                }
-            },
-            stream=False
-        )
-        result = response.choices[0].message.content.replace('```json', '').replace('```', '').strip()
-        end_time = time.time()
-        return result, end_time - start_time
-    except Exception as e:
-        return f"ERROR: {str(e)}", time.time() - start_time
-
-def analyze_with_cloudflare(text):
-    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
-    api_token = os.getenv("CLOUDFLARE_API_TOKEN")
-    if not account_id or not api_token: return "ERROR: No API Credentials", 0
-
-    start_time = time.time()
-    try:
-        model = "@cf/meta/llama-3-8b-instruct"
-        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
-        headers = {"Authorization": f"Bearer {api_token}"}
-        
-        prompt = f"""Analiza el sentimiento de este comentario de Instagram: "{text}".
-        Responde estrictamente con un objeto JSON: {{"sentimiento": "Positivo|Negativo|Neutro", "explicacion": "razon muy breve (max 10 palabras)"}}"""
-        
-        payload = {
-            "messages": [
-                {"role": "system", "content": "You are a sentiment analysis bot. Output JSON only."},
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": 1024
-        }
-        response = requests.post(url, headers=headers, json=payload)
-        response_json = response.json()
-        
-        if response_json.get('success'):
-            result = response_json['result']['response'].strip()
-            if "```json" in result:
-                result = result.split("```json")[1].split("```")[0].strip()
-            elif "```" in result:
-                result = result.split("```")[1].strip()
-            
-            end_time = time.time()
-            return result, end_time - start_time
-        else:
-            return f"ERROR: {response_json.get('errors')}", time.time() - start_time
-    except Exception as e:
-        return f"ERROR: {str(e)}", time.time() - start_time
 
 def robust_json_parse(text):
     text = text.strip()
+    
+    # ---------------------------------------------------------
+    # IMPROVEMENT: Explicitly remove markdown code blocks
+    # ---------------------------------------------------------
+    if text.startswith("```"):
+        # Remove first line (```json or ```)
+        text = re.sub(r"^```(json)?\s*\n?", "", text)
+        # Remove last line (```)
+        text = re.sub(r"\n?```\s*$", "", text)
+        text = text.strip()
+
     text = text.replace("“", '"').replace("”", '"') 
     
     try:
@@ -632,39 +630,60 @@ def process_nlp_row(row):
     duration = 0
     model_used = "Unknown"
 
-    if 'linkedin' in origin:
-        result_raw, duration = analyze_with_gemini(text)
-        model_used = "Gemini (LinkedIn)"
-    elif 'x' in origin or 'twitter' in origin:
-        result_raw, duration = analyze_with_groq(text)
-        model_used = "Groq (X)"
-    elif 'facebook' in origin or 'fb' in origin:
-        result_raw, duration = analyze_with_openrouter(text)
-        model_used = "OpenRouter (Facebook)"
-    elif 'instagram' in origin or 'ig' in origin:
-        result_raw, duration = analyze_with_cloudflare(text)
-        model_used = "Cloudflare (Instagram)"
-    else:
-        result_raw, duration = analyze_with_gemini(text)
-        model_used = "Gemini (Default)"
+    # Uso exclusivo de Gemini para todas las plataformas
+    result_raw, duration = analyze_with_gemini(text)
+    model_used = "Gemini"
 
     parsed = robust_json_parse(result_raw)
 
     if parsed and isinstance(parsed, dict):
         sentiment = parsed.get("sentimiento", "Desconocido")
+        # Asegurar consistencia (Capital Case)
+        if hasattr(sentiment, 'lower'):
+            s_lower = sentiment.lower()
+            if 'positivo' in s_lower: sentiment = 'Positivo'
+            elif 'negativo' in s_lower: sentiment = 'Negativo'
+            elif 'neutro' in s_lower: sentiment = 'Neutro'
+        
         explanation = parsed.get("explicacion", "Sin explicación")
     else:
         sentiment = "Error Parsing"
         explanation = result_raw 
 
-    return {
+    final_result = {
         "texto_original": text,
         "origen": origin,
         "modelo": model_used,
         "sentimiento": sentiment,
         "explicacion": explanation,
-        "tiempo_ejecucion": round(duration, 4)
+        "tiempo_ejecucion": round(duration, 4),
+        "timestamp": datetime.utcnow()
     }
+    
+    # --- DEBUG FINAL OUTPUT (Para verificar formato final) ---
+    try:
+        debug_final = 'debug_final_output.json'
+        # Append mode efficiency check: read all is slow, but fine for debug
+        data_final = []
+        if os.path.exists(debug_final):
+            with open(debug_final, 'r', encoding='utf-8') as f:
+                try:
+                    data_final = json.load(f)
+                except:
+                    data_final = []
+        
+        data_final.append(final_result)
+        # Keep last 50 only
+        if len(data_final) > 50: 
+            data_final = data_final[-50:]
+            
+        with open(debug_final, 'w', encoding='utf-8') as f:
+            json.dump(data_final, f, indent=4, ensure_ascii=False, default=str)
+    except Exception as e:
+        print(f"Error logging final output: {e}")
+    # ---------------------------------------------------------
+
+    return final_result
 
 def run_advanced_nlp():
     print("\n🚀 INICIANDO ANÁLISIS NLP PARALELO (MODO ULTRA-RÁPIDO)")

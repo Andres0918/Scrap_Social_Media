@@ -3,3 +3,11 @@
 
 # ignorar archivos de comentarios de cada red social
 comentarios_*.csv
+
+node_modules/
+
+__pycache__/
+
+.angular/
+
+*.json

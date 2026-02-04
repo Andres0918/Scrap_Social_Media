@@ -1,0 +1,108 @@
+<div class="stats-cards-container" *ngIf="statistics">
+    <div class="stats-grid">
+        <!-- Total Comments -->
+        <p-card styleClass="stat-card stat-card-primary">
+            <div class="stat-content">
+                <div class="stat-icon">
+                    <i class="pi pi-comments"></i>
+                </div>
+                <div class="stat-info">
+                    <div class="stat-value">{{ statistics.stats.total_comments  }}</div>
+                    <div class="stat-label">Comentarios Totales</div>
+                </div>
+            </div>
+        </p-card>
+
+        <!-- Dominant Sentiment -->
+        <p-card styleClass="stat-card stat-card-success">
+            <div class="stat-content">
+                <div class="stat-icon">
+                    <i class="pi pi-heart-fill"></i>
+                </div>
+                <div class="stat-info">
+                    <div class="stat-value">{{ getDominantSentiment() }}</div>
+                    <div class="stat-label">Sentimiento Dominante</div>
+                </div>
+            </div>
+        </p-card>
+
+        <!-- Avg Processing Time -->
+        <p-card styleClass="stat-card stat-card-warning">
+            <div class="stat-content">
+                <div class="stat-icon">
+                    <i class="pi pi-bolt"></i>
+                </div>
+                <div class="stat-info">
+                    <div class="stat-value">{{ statistics.stats.avg_processing_time }}s</div>
+                    <div class="stat-label">Tiempo Promedio</div>
+                </div>
+            </div>
+        </p-card>
+
+        <!-- Platforms Analyzed -->
+        <p-card styleClass="stat-card stat-card-info">
+            <div class="stat-content">
+                <div class="stat-icon">
+                    <i class="pi pi-globe"></i>
+                </div>
+                <div class="stat-info">
+                    <div class="stat-value">{{ getPlatformCount() }}</div>
+                    <div class="stat-label">Plataformas Analizadas</div>
+                </div>
+            </div>
+        </p-card>
+    </div>
+
+    <!-- Sentiment Distribution Knobs -->
+    <div class="knobs-container">
+        <p-card styleClass="knobs-card">
+            <ng-template pTemplate="header">
+                <div class="knobs-header">
+                    <i class="pi pi-chart-pie"></i>
+                    <span>Distribución de Sentimientos</span>
+                </div>
+            </ng-template>
+            <div class="knobs-grid">
+                <div class="knob-item">
+                    <p-knob
+                        [(ngModel)]="positivePercentage"
+                        [size]="150"
+                        valueColor="#10B981"
+                        rangeColor="#E5E7EB"
+                        [readonly]="true"
+                    ></p-knob>
+                    <div class="knob-label positive">
+                        <i class="pi pi-thumbs-up"></i>
+                        Positivo
+                    </div>
+                </div>
+                <div class="knob-item">
+                    <p-knob
+                        [(ngModel)]="negativePercentage"
+                        [size]="150"
+                        valueColor="#EF4444"
+                        rangeColor="#E5E7EB"
+                        [readonly]="true"
+                    ></p-knob>
+                    <div class="knob-label negative">
+                        <i class="pi pi-thumbs-down"></i>
+                        Negativo
+                    </div>
+                </div>
+                <div class="knob-item">
+                    <p-knob
+                        [(ngModel)]="neutralPercentage"
+                        [size]="150"
+                        valueColor="#F59E0B"
+                        rangeColor="#E5E7EB"
+                        [readonly]="true"
+                    ></p-knob>
+                    <div class="knob-label neutral">
+                        <i class="pi pi-minus"></i>
+                        Neutro
+                    </div>
+                </div>
+            </div>
+        </p-card>
+    </div>
+</div>
