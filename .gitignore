@@ -1,0 +1,5 @@
+.env
+*.pkl
+
+# ignorar archivos de comentarios de cada red social
+comentarios_*.csv
