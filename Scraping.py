@@ -1,14 +1,30 @@
 import pickle
 import time
 import threading
+from selenium import webdriver
+import pickle
+import time
 import random
 import csv
+import os
+import re
+import unicodedata
+import pandas as pd
+import matplotlib.pyplot as plt
+import emoji
+import nltk
+import threading
+from collections import Counter
+from playwright.async_api import async_playwright
+from wordcloud import WordCloud
 import os
 import re
 import json
 import unicodedata
 import concurrent.futures
 import ast
+import asyncio
+import nest_asyncio
 
 # Bibliotecas Externas
 import pandas as pd
@@ -27,10 +43,9 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
-from wordcloud import WordCloud
-from collections import Counter
 from nltk.util import ngrams
 
+# --- CONFIGURACIÓN DE NLTK ---
 # Cargar variables de entorno
 load_dotenv()
 
@@ -40,364 +55,364 @@ try:
     nltk.download('punkt')
     nltk.download('punkt_tab')
 except Exception as e:
-    print(f"⚠️ Nota: Recursos NLTK ya descargados o error menor: {e}")
+    print(f"Error NLTK: {e}")
 
+nest_asyncio.apply()
 
-# =================================================================================================
-# SECCIÓN 1: CONFIGURACIÓN Y UTILIDADES DE SCRAPING (SELENIUM)
-# =================================================================================================
+# --- UTILIDAD: CONVERTIDOR DE COOKIES PKL A PLAYWRIGHT ---
 
-def crear_driver():
-    options = Options()
-    options.add_argument("--incognito")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-notifications")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    
-    driver = webdriver.Chrome(options=options)
-    # User agent para evitar bloqueos básicos
-    driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-        "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-    return driver
-
-def crear_driver_basico():
-    options = Options()
-    options.add_argument("--start-maximized")
-    driver = webdriver.Chrome(options=options)
-    return driver
-
-def generar_todas_las_cookies():
-    plataformas = {
-        "LinkedIn": "https://www.linkedin.com/login",
-        "X": "https://x.com/login",
-        "Facebook": "https://www.facebook.com",
-        "Instagram": "https://www.instagram.com/accounts/login/"
-    }
-
-    for nombre, url in plataformas.items():
-        print(f"\n--- GENERANDO COOKIES PARA: {nombre} ---")
-        driver = crear_driver_basico()
+async def inyectar_cookies_pkl(contexto, archivo_pkl):
+    """Traduce tus .pkl de Selenium al formato de Playwright"""
+    if os.path.exists(archivo_pkl):
         try:
-            driver.get(url)
-            print(f"Por favor, inicia sesión en {nombre}. Tienes 60 segundos...")
-            time.sleep(60) # Tiempo para loguearte
-            
-            nombre_archivo = f"{nombre.lower()}_cookies.pkl"
-            with open(nombre_archivo, "wb") as file:
-                pickle.dump(driver.get_cookies(), file)
-            
-            print(f"✅ Cookies de {nombre} guardadas en {nombre_archivo}")
+            with open(archivo_pkl, "rb") as f:
+                cookies_selenium = pickle.load(f)
+                cookies_playwright = []
+                for c in cookies_selenium:
+                    cookie_limpia = {
+                        'name': c['name'],
+                        'value': c['value'],
+                        'domain': c['domain'],
+                        'path': c['path'] if 'path' in c else '/',
+                        'secure': c['secure'] if 'secure' in c else True,
+                        'httpOnly': c['httpOnly'] if 'httpOnly' in c else False,
+                        'sameSite': 'Lax'
+                    }
+                    cookies_playwright.append(cookie_limpia)
+                await contexto.add_cookies(cookies_playwright)
+                return True
         except Exception as e:
-            print(f"❌ Error con {nombre}: {e}")
-        finally:
-            driver.quit() 
+            print(f"Error procesando {archivo_pkl}: {e}")
+    return False
 
-# -------------------------------------------------------------------------------------------------
-# LOGICA DE EXTRACTORES (POSTS)
-# -------------------------------------------------------------------------------------------------
+import os
+import csv
 
-def scrap_linkedin(tema):
-    driver = crear_driver()
-    
-    def esta_logueado():
-        try:
-            driver.find_element(By.CLASS_NAME, "global-nav__content")
-            return True
-        except: return False
-
-    def cargar_cookies():
-        print("[LinkedIn] Cargando cookies...")
-        driver.get("https://www.linkedin.com")
-        time.sleep(3)
-        try:
-            with open("linkedin_cookies.pkl", "rb") as file:
-                cookies = pickle.load(file)
-                for cookie in cookies:
-                    if 'expiry' in cookie: del cookie['expiry']
-                    driver.add_cookie(cookie)
-            driver.refresh()
-            time.sleep(5)
-            return esta_logueado()
-        except: return False
-
-    if not cargar_cookies():
-        print("[LinkedIn] Cookies fallidas. Esperando inicio de sesión MANUAL...")
-        while not esta_logueado():
-            time.sleep(5)
-        print("[LinkedIn] Sesión manual detectada. Guardando nuevas cookies...")
-        with open("linkedin_cookies.pkl", "wb") as file:
-            pickle.dump(driver.get_cookies(), file)
-
-    print(f"[LinkedIn] Iniciando búsqueda: {tema}")
-    search_url = f"https://www.linkedin.com/search/results/content/?keywords={tema}"
-    driver.get(search_url)
-    time.sleep(8)
-
-    with open('comentarios_linkedin.csv', 'w', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow(["Comentario"])
-
-        posts = driver.find_elements(By.XPATH, "//div[contains(@data-view-tracking-scope, 'FeedUpdateServedEvent')]")
-        print(f"[LinkedIn] {len(posts)} publicaciones encontradas.")
-
-        conteo_total = 0
-        for i, post in enumerate(posts[:10]):
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", post)
-                time.sleep(2)
-                try:
-                    boton_conteo = post.find_element(By.CSS_SELECTOR, "div[data-view-name='feed-comment-count']")
-                    driver.execute_script("arguments[0].click();", boton_conteo)
-                    time.sleep(4)
-                except: continue
-
-                while True:
-                    try:
-                        boton_mas = post.find_element(By.CSS_SELECTOR, "button[data-view-name='more-comments']")
-                        driver.execute_script("arguments[0].click();", boton_mas)
-                        time.sleep(random.uniform(2, 4))
-                    except: break
-
-                comentarios = post.find_elements(By.CSS_SELECTOR, "span[data-testid='expandable-text-box']")
-                for c in comentarios:
-                    texto = c.text.strip()
-                    if len(texto) > 5:
-                        writer.writerow([texto.replace('\n', ' ')])
-                        conteo_total += 1
-                print(f"[LinkedIn] Post {i+1} procesado.")
-            except Exception as e:
-                print(f"[LinkedIn] Error en post {i+1}: {e}")
-                continue
-
-    print(f"✅ [LinkedIn] Finalizado. Total: {conteo_total} comentarios.")
-    driver.quit()
-
-
-def scrap_x(tema):
-    driver = crear_driver()
-    print("[X] Cargando cookies...")
-    driver.get("https://x.com")
-    time.sleep(4)
+def guardar_comentario(archivo, datos, encabezado):
+    """
+    Versión robusta: Asegura la escritura inmediata en disco (Disk Sync).
+    """
     try:
-        with open("x_cookies.pkl", "rb") as file:
-            cookies = pickle.load(file)
-            for cookie in cookies:
-                if 'expiry' in cookie: del cookie['expiry']
-                driver.add_cookie(cookie)
-        driver.refresh()
-        time.sleep(6)
-    except FileNotFoundError:
-        print("❌ [X] No se encontró x_cookies.pkl. Inicia sesión manualmente.")
+        # 1. Verificamos si existe
+        file_exists = os.path.isfile(archivo)
+        
+        # 2. Abrimos con buffering=0 no es posible en modo texto, 
+        # así que usamos flush() manual.
+        with open(archivo, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # 3. Encabezado
+            if not file_exists:
+                writer.writerow(encabezado)
+            
+            # 4. Escribir datos
+            writer.writerow(datos)
+            
+            # 5. EL TRUCO: Forzar a Windows a escribir en el disco AHORA
+            f.flush()
+            os.fsync(f.fileno()) 
+            
+    except Exception as e:
+        print(f"❌ Error crítico al escribir en {archivo}: {e}")
 
-    print(f"[X] Buscando: {tema}")
-    search_url = f"https://x.com/search?q={tema}&src=typed_query"
-    driver.get(search_url)
-    time.sleep(7)
 
-    with open('comentarios_x.csv', 'w', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow(["Post_Texto"])
+# --- FASE 2: SCRAPING (PLAYWRIGHT + PKL + DEDUPLICACIÓN) ---
 
-        for i in range(5):
-            print(f"[X] Scroll {i+1}...")
-            tweets = driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="tweetText"]')
-            for tweet in tweets:
+async def scrap_linkedin_playwright(tema):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context(viewport={'width': 1280, 'height': 900})
+        
+        if await inyectar_cookies_pkl(context, "linkedin_cookies.pkl"):
+            page = await context.new_page()
+            url = f"https://www.linkedin.com/search/results/content/?keywords={tema.replace(' ', '%20')}"
+            print(f"🚀 [LinkedIn] Iniciando en: {url}")
+            await page.goto(url)
+            await page.wait_for_timeout(7000)
+
+            vistos = set()
+            posts_ya_leidos = set()
+
+            with open('comentarios_linkedin.csv', 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                if os.stat('comentarios_linkedin.csv').st_size == 0:
+                    writer.writerow(["texto"])
+
+                for scroll in range(4):
+                    posts = page.locator('div[role="listitem"]')
+                    total_posts = await posts.count()
+                    print(f"⏳ Iteración {scroll+1}: {total_posts} posts detectados.")
+
+                    for i in range(total_posts):
+                        try:
+                            post_actual = posts.nth(i)
+                            ref_text = await post_actual.inner_text()
+                            post_id = hash(ref_text[:100])
+                            
+                            if post_id in posts_ya_leidos: continue
+
+                            # 1. CLICK EN ABRIR COMENTARIOS
+                            boton_abrir = post_actual.locator('div[data-view-name="feed-comment-count"]')
+                            if await boton_abrir.count() > 0:
+                                await post_actual.scroll_into_view_if_needed()
+                                await boton_abrir.first.evaluate("el => el.click()")
+                                await page.wait_for_timeout(3000)
+
+                                # 2. CAMBIAR A "MÁS RECIENTES" (Selector que enviaste)
+                                try:
+                                    sort_toggle = post_actual.locator('div[data-view-name="comment-sort-toggle"]')
+                                    if await sort_toggle.count() > 0:
+                                        await sort_toggle.click()
+                                        await page.wait_for_timeout(1500)
+                                        # Click en la opción del menú que aparece
+                                        await page.get_by_text("Más recientes").first.click()
+                                        await page.wait_for_timeout(2500)
+                                except: pass
+
+                                # 3. EXPANDIR HILO (Cargar más comentarios)
+                                while True:
+                                    boton_mas = post_actual.locator('button[data-view-name="more-comments"]')
+                                    if await boton_mas.count() > 0 and await boton_mas.is_visible():
+                                        await boton_mas.first.click()
+                                        await page.wait_for_timeout(2500)
+                                    else:
+                                        break
+
+                                # 4. EXTRACCIÓN (Selector exacto de tu HTML)
+                                selector_txt = 'p[data-view-name="comment-commentary"] span[data-testid="expandable-text-box"]'
+                                elementos = await post_actual.locator(selector_txt).all()
+                                
+                                nuevos = 0
+                                for el in elementos:
+                                    t = (await el.inner_text()).strip().replace('\n', ' ')
+                                    if len(t) > 15 and t not in vistos:
+                                        vistos.add(t)
+                                        writer.writerow([t])
+                                        nuevos += 1
+                                
+                                if nuevos > 0:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                    print(f"      ✅ Post {i+1}: {nuevos} comentarios nuevos.")
+                                
+                                posts_ya_leidos.add(post_id)
+
+                        except Exception: continue
+
+                    await page.keyboard.press("PageDown")
+                    await page.wait_for_timeout(3000)
+
+            print(f"✨ LinkedIn finalizado. Total: {len(vistos)}")
+        await browser.close()
+
+async def scrap_facebook_playwright(tema):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context(viewport={'width': 1280, 'height': 900})
+        
+        if await inyectar_cookies_pkl(context, "facebook_cookies.pkl"):
+            page = await context.new_page()
+            url = f"https://www.facebook.com/search/posts/?q={tema.replace(' ', '%20')}"
+            print(f"🚀 [Facebook] Iniciando extracción por posición de contenedor...")
+            await page.goto(url)
+            await page.wait_for_timeout(8000)
+
+            vistos = set()
+            ultimo_posinset = 0
+
+            # Abrimos el archivo una sola vez
+            with open('comentarios_fb.csv', 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+
+                for scroll_principal in range(4):
+                    # Localizamos los contenedores específicos que me pasaste (aria-posinset)
+                    selector_pos = 'div[aria-posinset]'
+                    posts = page.locator(selector_pos)
+                    cantidad_actual = await posts.count()
+                    
+                    print(f"⏳ Iteración {scroll_principal + 1}: {cantidad_actual} publicaciones en el feed.")
+
+                    for i in range(cantidad_actual):
+                        try:
+                            post_actual = posts.nth(i)
+                            
+                            pos_attr = await post_actual.get_attribute("aria-posinset")
+                            pos_actual_num = int(pos_attr) if pos_attr else 0
+
+                            if pos_actual_num <= ultimo_posinset:
+                                continue # Ya procesamos esta posición
+
+                            boton_comentarios = post_actual.locator('div[role="button"]').filter(has_text=re.compile(r"\d+.*comentario", re.I))
+                            
+                            if await boton_comentarios.count() > 0:
+                                await post_actual.scroll_into_view_if_needed()
+                                await page.wait_for_timeout(1000)
+                                
+                                # Clic forzado
+                                await boton_comentarios.first.click(force=True)
+                                print(f"   👉 Entrando al Post posición {pos_actual_num}...")
+                                await page.wait_for_timeout(4500)
+
+                                # 2. SCROLL INTERNO EN EL DIÁLOGO (Fuerza carga de hilos)
+                                # El diálogo es un modal que aparece con role="dialog"
+                                for _ in range(4): # 4 segundos de scroll intenso
+                                    await page.mouse.wheel(0, 1000)
+                                    await page.wait_for_timeout(1000)
+
+                                # 3. COPIAR TEXTOS (Selector de tu HTML previo)
+                                selector_txt = 'div[role="dialog"] div.x1lliihq.xjkvuk6.x1iorvi4'
+                                elementos = await page.locator(selector_txt).all()
+                                
+                                nuevos = 0
+                                for el in elementos:
+                                    t = (await el.inner_text()).strip().replace('\n', ' ')
+                                    if len(t) > 12 and t not in vistos:
+                                        vistos.add(t)
+                                        writer.writerow([t])
+                                        nuevos += 1
+                                
+                                if nuevos > 0:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                    print(f"      ✅ {nuevos} comentarios nuevos guardados.")
+
+                                # 4. SALIR Y ACTUALIZAR MARCADOR
+                                await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(1500)
+                            
+                            ultimo_posinset = pos_actual_num
+
+                        except Exception:
+                            await page.keyboard.press("Escape")
+                            continue
+
+                    # Bajar el scroll principal para que Facebook cargue más aria-posinset
+                    await page.keyboard.press("End")
+                    await page.wait_for_timeout(4000)
+
+            print(f"✨ Sesión de Facebook finalizada. Total: {len(vistos)}")
+        await browser.close()
+
+async def scrap_x_playwright(tema):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context(viewport={'width': 1280, 'height': 800})
+        
+        if await inyectar_cookies_pkl(context, "x_cookies.pkl"):
+            page = await context.new_page()
+            url_busqueda = f"https://x.com/search?q={tema.replace(' ', '%20')}&f=live"
+            print(f"🚀 [X] Iniciando recolección exhaustiva: {tema}")
+            await page.goto(url_busqueda)
+            await page.wait_for_timeout(6000)
+
+            vistos = set()
+            tweets_procesados = set()
+
+            with open('comentarios_x.csv', 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+
+                for scroll_principal in range(4): # Más profundidad de búsqueda
+                    tweets = page.locator('article[data-testid="tweet"]')
+                    cantidad = await tweets.count()
+                    
+                    for i in range(cantidad):
+                        try:
+                            tweet_actual = tweets.nth(i)
+                            texto_ref = await tweet_actual.inner_text()
+                            tweet_id = hash(texto_ref[:80])
+                            
+                            if tweet_id in tweets_procesados: continue
+
+                            # --- ENTRAR AL HILO ---
+                            await tweet_actual.scroll_into_view_if_needed()
+                            await page.wait_for_timeout(1000)
+                            await tweet_actual.click()
+                            print(f"   👉 Entrando al hilo {i+1}...")
+                            await page.wait_for_timeout(4000)
+
+                            # --- SCROLL INTERNO HASTA EL FINAL ---
+                            intentos_sin_nuevos = 0
+                            while intentos_sin_nuevos < 3: # Si en 3 scrolls no hay nada nuevo, fin.
+                                antes_de_scroll = len(vistos)
+                                
+                                # Capturar comentarios visibles
+                                elementos = await page.locator('div[data-testid="tweetText"]').all()
+                                for el in elementos:
+                                    t = (await el.inner_text()).strip().replace('\n', ' ')
+                                    if len(t) > 12 and t not in vistos:
+                                        vistos.add(t)
+                                        writer.writerow([t])
+                                
+                                if len(vistos) > antes_de_scroll:
+                                    intentos_sin_nuevos = 0 # Reset si encontramos datos
+                                    f.flush()
+                                else:
+                                    intentos_sin_nuevos += 1
+                                
+                                # Hacer scroll para cargar más
+                                await page.mouse.wheel(0, 1000)
+                                await page.wait_for_timeout(1500)
+
+                            print(f"      ✅ Hilo completado. Total acumulado: {len(vistos)}")
+
+                            # --- RETORNO BLINDADO (Escape sucesivo para no perder el feed) ---
+                            # Primero intentamos con los botones que me pasaste
+                            salida_ok = False
+                            for selector in ['button[data-testid="app-bar-back"]', 'button[aria-label="Close"]']:
+                                btn = page.locator(selector)
+                                if await btn.count() > 0 and await btn.is_visible():
+                                    await btn.first.click()
+                                    salida_ok = True
+                                    break
+                            
+                            if not salida_ok:
+                                # Si X se pone difícil, Escape nos devuelve al feed principal sin recargar
+                                await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(500)
+                                await page.keyboard.press("Escape")
+
+                            await page.wait_for_timeout(2000)
+                            tweets_procesados.add(tweet_id)
+
+                        except Exception:
+                            # Emergencia: Escape y seguir con el siguiente
+                            await page.keyboard.press("Escape")
+                            continue
+
+                    # Bajar el feed principal para cargar más tweets
+                    await page.evaluate("window.scrollBy(0, 2000)")
+                    await page.wait_for_timeout(4000)
+
+            print(f"✨ Proceso de X terminado. Dataset listo con {len(vistos)} entradas.")
+        await browser.close()
+
+async def scrap_instagram_playwright(tema):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        if await inyectar_cookies_pkl(context, "instagram_cookies.pkl"):
+            page = await context.new_page()
+            await page.goto(f"https://www.instagram.com/explore/tags/{tema.replace(' ', '')}/")
+            await page.wait_for_timeout(5000)
+            vistos = set()
+            with open('comentarios_ig.csv', 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["texto"])
                 try:
-                    texto = tweet.text.strip().replace('\n', ' ')
-                    if len(texto) > 10:
-                        writer.writerow([texto])
-                except: continue
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(random.uniform(4, 6))
-
-    print("✅ [X] Finalizado.")
-    driver.quit()
-
-
-def scrap_facebook(tema):
-    driver = crear_driver()
-
-    def esta_logueado():
-        try:
-            driver.find_element(By.XPATH, "//div[@role='navigation'] | //input[@placeholder='Buscar en Facebook']")
-            return True
-        except: return False
-
-    def cargar_cookies():
-        print("[Facebook] Cargando cookies...")
-        driver.get("https://www.facebook.com")
-        time.sleep(4)
-        try:
-            with open("facebook_cookies.pkl", "rb") as file:
-                cookies = pickle.load(file)
-                for cookie in cookies:
-                    if 'expiry' in cookie: del cookie['expiry']
-                    driver.add_cookie(cookie)
-            driver.refresh()
-            time.sleep(6)
-            return esta_logueado()
-        except: return False
-
-    if not cargar_cookies():
-        print("[Facebook] Esperando inicio de sesión MANUAL...")
-        while not esta_logueado():
-            time.sleep(5)
-        with open("facebook_cookies.pkl", "wb") as file:
-            pickle.dump(driver.get_cookies(), file)
-
-    print(f"[Facebook] Buscando: {tema}")
-    driver.get(f"https://www.facebook.com/search/posts/?q={tema}")
-    time.sleep(8)
-
-    with open('comentarios_fb.csv', 'w', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow(["Comentario"])
-
-        for i in range(1, 11):
-            try:
-                selector_post = f"//div[@aria-posinset='{i}']"
-                post = driver.find_element(By.XPATH, selector_post)
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", post)
-                time.sleep(2)
-                try:
-                    boton_abrir = post.find_element(By.XPATH, ".//div[@role='button' and contains(., 'comentario')]")
-                    driver.execute_script("arguments[0].click();", boton_abrir)
-                    time.sleep(5)
-                except: continue
-
-                try:
-                    filtro_actual = driver.find_element(By.XPATH, "//div[@role='button']//span[contains(text(), 'relevantes') or contains(text(), 'Relevant')]")
-                    driver.execute_script("arguments[0].click();", filtro_actual)
-                    time.sleep(2)
-                    opcion_todos = driver.find_element(By.XPATH, "//div[@role='menuitem']//span[contains(text(), 'Todos los comentarios') or contains(text(), 'All comments')]")
-                    driver.execute_script("arguments[0].click();", opcion_todos)
-                    time.sleep(5)
+                    await page.click("div._aagw") # Abrir primer post
+                    for _ in range(30):
+                        await page.wait_for_selector("div._a9zr", timeout=5000)
+                        elementos = await page.query_selector_all("div._a9zr span._ap3a")
+                        for el in elementos:
+                            t = (await el.inner_text()).strip().replace('\n', ' ')
+                            if len(t) > 10 and t not in vistos:
+                                vistos.add(t); writer.writerow([t])
+                        await page.keyboard.press("ArrowRight")
+                        await page.wait_for_timeout(random.randint(1500, 2500))
                 except: pass
+        await browser.close()
 
-                for _ in range(10):
-                    webdriver.ActionChains(driver).send_keys(Keys.PAGE_DOWN).perform()
-                    time.sleep(1.2)
-
-                bloques_texto = driver.find_elements(By.XPATH, "//div[@dir='auto' and @style='text-align: start;']")
-                for bloque in bloques_texto:
-                    texto = bloque.text.strip().replace('\n', ' ')
-                    if len(texto) > 5:
-                        writer.writerow([texto])
-                
-                print(f"[Facebook] Post {i} procesado.")
-                webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-                time.sleep(2)
-            except:
-                webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-                continue
-
-    print("✅ [Facebook] Finalizado.")
-    driver.quit()
-
-
-def scrap_instagram(tema):
-    driver = crear_driver()
-
-    def esta_logueado():
-        try:
-            driver.find_element(By.XPATH, "//*[@aria-label='Inicio' or @aria-label='Perfil' or @aria-label='Direct']")
-            return True
-        except: return False
-
-    def cargar_cookies_ig():
-        print("[Instagram] Intentando cargar sesión...")
-        driver.get("https://www.instagram.com")
-        time.sleep(5)
-        try:
-            with open("instagram_cookies.pkl", "rb") as file:
-                cookies = pickle.load(file)
-                for cookie in cookies:
-                    if 'expiry' in cookie: del cookie['expiry']
-                    driver.add_cookie(cookie)
-            driver.refresh()
-            time.sleep(6)
-            return esta_logueado()
-        except: return False
-
-    if not cargar_cookies_ig():
-        print("\nSISTEMA BLOQUEADO: Entra MANUALMENTE a Instagram.")
-        while not esta_logueado():
-            time.sleep(5)
-        with open("instagram_cookies.pkl", "wb") as file:
-            pickle.dump(driver.get_cookies(), file)
-        print("✅ Sesión manual guardada.")
-
-    hashtag = tema.replace(' ', '')
-    print(f"[Instagram] Buscando: #{hashtag}...")
-    driver.get(f"https://www.instagram.com/explore/tags/{hashtag}/")
-    time.sleep(10)
-
-    with open('comentarios_ig.csv', 'w', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow(["Comentario"])
-
-        try:
-            primera_publicacion = driver.find_element(By.CLASS_NAME, "_aagw")
-            driver.execute_script("arguments[0].click();", primera_publicacion)
-            time.sleep(5)
-        except Exception as e:
-            print(f"❌ Error al abrir cuadrícula: {e}")
-            driver.quit()
-            return
-
-        conteo_total = 0
-        for i in range(15): 
-            try:
-                print(f"   [+] Extrayendo de publicación {i+1}...")
-                comentarios_html = driver.find_elements(By.CSS_SELECTOR, "div._a9zr span._ap3a._aaco._aacu._aacx._aad7._aade")
-                conteo_post = 0
-                for c in comentarios_html:
-                    texto = c.text.strip()
-                    if len(texto) > 10 and not texto.startswith('@'):
-                        writer.writerow([texto.replace('\n', ' ')])
-                        conteo_post += 1
-                        conteo_total += 1
-                
-                print(f"       [OK] {conteo_post} comentarios capturados.")
-                try:
-                    boton_siguiente = driver.find_element(By.XPATH, "//*[local-name()='svg' and @aria-label='Siguiente']/ancestor::button")
-                    driver.execute_script("arguments[0].click();", boton_siguiente)
-                    time.sleep(random.uniform(4, 6))
-                except:
-                    try:
-                        boton_siguiente = driver.find_element(By.CSS_SELECTOR, "button._abl-")
-                        driver.execute_script("arguments[0].click();", boton_siguiente)
-                        time.sleep(random.uniform(4, 6))
-                    except:
-                        print("       [!] Fin de las publicaciones.")
-                        break
-            except Exception as e:
-                print(f"       [!] Error en publicación {i+1}")
-                continue
-
-    print(f"\n✅ SCRAPING INSTAGRAM FINALIZADO. Total: {conteo_total}")
-    driver.quit()
-
-
-# =================================================================================================
-# SECCIÓN 2: PREPROCESAMIENTO Y ANÁLISIS BÁSICO (WordCloud, Stats)
-# =================================================================================================
-
-def cargar_y_unificar_datos():
-    archivos = ['comentarios_linkedin.csv', 'comentarios_x.csv', 'comentarios_fb.csv', 'comentarios_ig.csv']
-    dfs = []
-    for f in archivos:
-        try:
-            temp_df = pd.read_csv(f)
-            temp_df.columns = ['texto']
-            temp_df['origen'] = f.split('_')[1].split('.')[0] # Extrae el nombre de la red social
-            dfs.append(temp_df)
-            print(f"✅ Cargado: {f}")
-        except:
-            print(f"⚠️ No se encontró {f}, saltando...")
-    return pd.concat(dfs, ignore_index=True)
+# --- FASE 3: PROCESAMIENTO PLN Y REPORTES ---
 
 def limpiar_profundo(texto):
     if not isinstance(texto, str): return ""
@@ -406,48 +421,34 @@ def limpiar_profundo(texto):
     texto = re.sub(r'@\w+|#\w+', '', texto)
     texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('utf-8', 'ignore')
     texto = re.sub(r'[^a-z\s]', '', texto)
-    texto = " ".join(texto.split())
-    return texto
+    return " ".join(texto.split())
 
-def procesar_nlp(texto_limpio):
-    tokens = nltk.word_tokenize(texto_limpio)
-    stop_words = set(stopwords.words('spanish'))
-    tokens = [w for w in tokens if w not in stop_words and len(w) > 2]
+def procesar_nlp(texto):
+    tokens = nltk.word_tokenize(texto)
+    stop = set(stopwords.words('spanish'))
+    tokens = [w for w in tokens if w not in stop and len(w) > 2]
     stemmer = SnowballStemmer('spanish')
     return [stemmer.stem(w) for w in tokens]
 
-def realizar_analisis_investigados(df, todos_los_tokens):
-    print("\n" + "="*50)
-    print("PUNTO B: ANÁLISIS INVESTIGADOS POR EL GRUPO")
-    print("="*50)
 
-    print("\n1. FRECUENCIA DE EMOJIS (Sentimiento Visual):")
+def realizar_analisis_investigados(df, todos_los_tokens):
+    print("\n--- PUNTO B: ANÁLISIS EXTRAS ---")
     todos_emojis = [c for comentario in df['texto'] for c in str(comentario) if emoji.is_emoji(c)]
     if todos_emojis:
-        top_emojis = Counter(todos_emojis).most_common(5)
-        for e, freq in top_emojis:
-            nombre = emoji.demojize(e).replace(':', '').replace('_', ' ')
-            print(f"   {e} ({nombre.capitalize()}): {freq} veces")
-    else:
-        print("   No se detectaron emojis.")
-
-    print("\n2. TOP 5 CONCEPTOS COMPUESTOS (BIGRAMAS):")
+        print(f"1. Emojis Top: {Counter(todos_emojis).most_common(5)}")
     bigramas = list(ngrams(todos_los_tokens, 2))
-    top_bigramas = Counter(bigramas).most_common(5)
-    for b, freq in top_bigramas:
-        print(f"   - {b[0]} {b[1]}: {freq} menciones")
+    print(f"2. Bigramas Top: {Counter(bigramas).most_common(5)}")
+    riqueza = (len(set(todos_los_tokens)) / len(todos_los_tokens)) * 100
+    print(f"3. Riqueza Lexical: {riqueza:.2f}%")
 
-    print("\n3. LONGITUD PROMEDIO POR PLATAFORMA (Palabras):")
-    df['longitud'] = df['texto'].apply(lambda x: len(str(x).split()))
-    promedios = df.groupby('origen')['longitud'].mean()
-    for red, valor in promedios.items():
-        print(f"   - {red.capitalize()}: {valor:.2f} palabras por post")
+# --- MAIN ---
 
-    palabras_unicas = len(set(todos_los_tokens))
-    total_palabras = len(todos_los_tokens)
-    riqueza = (palabras_unicas / total_palabras) * 100 if total_palabras > 0 else 0
-    print(f"\n4. RIQUEZA LEXICAL TOTAL: {riqueza:.2f}%")
-    print("="*50)
+def run_async(func, tema):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(func(tema))
+    loop.close()
+
 
 def generar_wordcloud(tokens_totales):
     texto_nube = " ".join(tokens_totales)
@@ -722,61 +723,81 @@ def run_advanced_nlp():
 # MAIN FLOW
 # =================================================================================================
 
-def main():
-    if not os.path.exists("linkedin_cookies.pkl") or \
-       not os.path.exists("x_cookies.pkl") or \
-       not os.path.exists("facebook_cookies.pkl") or \
-       not os.path.exists("instagram_cookies.pkl"):
-        print("⚠️ Faltan cookies. Iniciando generador...")
-        generar_todas_las_cookies()
+if __name__ == "__main__":
+    tema = 'Daniel Noboa'
 
-    tema_investigacion = 'Rafael Correa'
-
-    # 1. SCRAPING
+    
+    # 1. EJECUCIÓN PARALELA DE SCRAPERS
     hilos = [
-        threading.Thread(target=scrap_linkedin, args=(tema_investigacion,)),
-        threading.Thread(target=scrap_x, args=(tema_investigacion,)),
-        threading.Thread(target=scrap_facebook, args=(tema_investigacion,)),
-        threading.Thread(target=scrap_instagram, args=(tema_investigacion,))
+        # threading.Thread(target=run_async, args=(scrap_linkedin_playwright, tema)),
+        threading.Thread(target=run_async, args=(scrap_x_playwright, tema)),
+        # threading.Thread(target=run_async, args=(scrap_facebook_playwright, tema)),
+        # threading.Thread(target=run_async, args=(scrap_instagram_playwright, tema))
     ]
 
-    print(f"🚀 Iniciando recolección paralela sobre: {tema_investigacion}")
+    print(f"🚀 Iniciando recolección paralela masiva para: {tema}")
     for h in hilos: h.start()
-    
-    print("⏳ Esperando a que los hilos terminen...")
     for h in hilos: h.join()
 
-    print("\n--- RECOLECCIÓN FINALIZADA ---")
+    # 2. CARGA Y UNIFICACIÓN DE DATOS (Dataset para IA)
+    archivos = {
+        'comentarios_linkedin.csv': 'linkedin',
+        'comentarios_x.csv': 'x',
+        'comentarios_fb.csv': 'facebook',
+        'comentarios_ig.csv': 'instagram'
+    }
+    
+    dfs = []
+    for archivo, red in archivos.items():
+        if os.path.exists(archivo):
+            temp_df = pd.read_csv(archivo)
+            temp_df['origen'] = red
+            dfs.append(temp_df)
 
-    # 2. UNIFICACIÓN Y TOKENIZACIÓN
-    print("Iniciando Fase de Procesamiento de Lenguaje Natural (Básica)...")
-    df = cargar_y_unificar_datos()
-
-    if df is not None and not df.empty:
-        print("🧼 Limpiando y Normalizando texto...")
-        df['texto_limpio'] = df['texto'].apply(limpiar_profundo)
-        
-        print("✂️ Tokenizando y aplicando Stemming...")
-        df['tokens'] = df['texto_limpio'].apply(procesar_nlp)
-        
-        todos_los_tokens = [t for sublista in df['tokens'] for t in sublista]
-        
-        if todos_los_tokens:
-            print("☁️ Generando Nube de Palabras...")
-            generar_wordcloud(todos_los_tokens)
-            
-            realizar_analisis_investigados(df, todos_los_tokens)
-            
-            df.to_csv('resultados_finales_grado.csv', index=False)
-            print("\n✨ CSV INTERMEDIO GENERADO: 'resultados_finales_grado.csv' ✨")
-            
-            # 3. LLAMADA AL PIPELINE AVANZADO (IA)
-            run_advanced_nlp()
-            
-        else:
-            print("❌ El procesamiento no generó tokens.")
+    if not dfs:
+        print("❌ No se recolectaron datos. Revisa las cookies o los selectores.")
     else:
-        print("❌ No se encontraron datos en los archivos CSV recolectados.")
+        df = pd.concat(dfs, ignore_index=True)
+        df = df.drop_duplicates(subset=['texto']) # Limpieza de duplicados
+        
+        # --- PROCESAMIENTO PLN ---
+        df['texto_limpio'] = df['texto'].apply(limpiar_profundo)
+        df['tokens'] = df['texto_limpio'].apply(procesar_nlp)
+        todos_los_tokens = [t for sub in df['tokens'] for t in sub]
 
-if __name__ == "__main__":
-    main()
+        # --- REPORTE DE MÉTRICAS (LO QUE NECESITABAS) ---
+        print("\n" + "="*50)
+        print("📊 RESUMEN ANALÍTICO DEL DATASET")
+        print("="*50)
+
+        # 1. Volumen por Red
+        print(f"1. VOLUMEN TOTAL ÚNICO: {len(df)} comentarios.")
+
+        # 2. Análisis de Bigramas (Punto B de tu tesis)
+        print("\n2. TOP 5 BIGRAMAS (Tendencias detectadas):")
+        bigramas = list(ngrams(todos_los_tokens, 2))
+        top_bigramas = Counter(bigramas).most_common(5)
+        for b, freq in top_bigramas:
+            print(f"   - {b[0]} {b[1]}: {freq} menciones")
+
+        # 3. Longitud Promedio (Análisis de Engagement)
+        print("\n3. LONGITUD PROMEDIO POR PLATAFORMA (Palabras):")
+        df['longitud'] = df['texto'].apply(lambda x: len(str(x).split()))
+        promedios = df.groupby('origen')['longitud'].mean()
+        for red, valor in promedios.items():
+            print(f"   - {red.capitalize()}: {valor:.2f} palabras por post")
+
+        # 4. Riqueza Lexical (Diversidad del vocabulario)
+        palabras_unicas = len(set(todos_los_tokens))
+        total_palabras = len(todos_los_tokens)
+        riqueza = (palabras_unicas / total_palabras) * 100 if total_palabras > 0 else 0
+        print(f"\n4. RIQUEZA LEXICAL TOTAL: {riqueza:.2f}%")
+        
+        # 5. Exportación Final
+        WordCloud(width=1000, height=500, background_color='white').generate(" ".join(todos_los_tokens)).to_file("nube_final.png")
+        df.to_csv('resultados_finales_grado.csv', index=False)
+
+        # run_advanced_nlp()
+        
+        print("="*50)
+        print("✨ PROCESO FINALIZADO: Dataset guardado y Nube generada.")
